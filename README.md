@@ -28,3 +28,7 @@ Read that folder's README first. Run things on a workspace you are allowed to us
 
 - Site: https://systemsinprod.com
 - YouTube: https://www.youtube.com/@systemsinprod
+
+## License
+
+MIT. See [LICENSE](LICENSE).
