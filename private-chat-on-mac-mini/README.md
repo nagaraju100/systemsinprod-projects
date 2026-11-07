@@ -6,11 +6,9 @@ Run a 35B open-source model on a Mac mini, serve it as a web chat app over a pri
 
 | File | Purpose |
 |---|---|
-| `install-splash.sh` | Install Splash, download the model, configure auto-start |
-| `splash-server.plist` | LaunchAgent plist for Splash (restarts after reboot) |
-| `muthyachat/` | MuthyaChat — the ChatGPT-style web UI |
-| `tailscale-setup.sh` | Tailscale join and firewall helpers |
-| `verify.sh` | Health-check script for monitoring |
+| `install-splash.sh` | One-command installer — installs Splash, writes LaunchAgent, starts the server |
+| `tailscale-setup.sh` | Helpers for joining the tailnet and printing Tailscale URLs |
+| `verify.sh` | Health-check script that returns exit 0/1 (for monitoring or cron) |
 
 ## One-command setup
 
