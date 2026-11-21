@@ -196,6 +196,7 @@ async def api_followup(req: FollowupRequest) -> FollowupResponse:
                 ],
                 "max_tokens": 128,
                 "temperature": 0,
+                "thinking": {"type": "disabled"},
             },
         )
         resp.raise_for_status()
@@ -268,6 +269,7 @@ async def _llm_to_sql_and_explain(question: str) -> tuple[str, str | None]:
                 "messages": [system_msg, user_msg],
                 "max_tokens": 2048,
                 "temperature": 0,
+                "thinking": {"type": "disabled"},
             },
         )
         resp.raise_for_status()
