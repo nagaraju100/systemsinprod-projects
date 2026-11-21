@@ -45,7 +45,6 @@ async function fetchTables() {
 }
 
 async function showColumns(tableName, tag) {
-    // Remove "selected" class from all tags
     document.querySelectorAll(".table-tag.selected").forEach(el => el.classList.remove("selected"));
     document.querySelectorAll(".table-columns.expanded").forEach(el => {
         el.classList.remove("expanded");
@@ -53,11 +52,9 @@ async function showColumns(tableName, tag) {
     });
 
     tag.classList.add("selected");
-
     const wrapper = tag.parentElement;
     const colsDiv = wrapper.querySelector(".table-columns");
 
-    // If already expanded, collapse it
     if (colsDiv.classList.contains("expanded")) {
         tag.classList.remove("selected");
         colsDiv.classList.remove("expanded");
@@ -102,18 +99,28 @@ async function submit() {
     sendBtn.disabled = true;
     sendBtn.textContent = "...";
 
+    // Pipeline block — shows the 4-stage architecture
+    const pipelineBlock = buildPipelineBlock();
+    results.insertBefore(pipelineBlock, results.firstChild);
+    const pipelineList = pipelineBlock.el;
+    const submitBtn = pipelineBlock.toggleBtn;
+
     // Add user's question to results
     const qBlock = document.createElement("div");
     qBlock.className = "result-block";
-    const qText = question.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    const qText = escapeHtml(question);
     qBlock.innerHTML = `<div class="result-header"><span class="q-text">${qText}</span></div>`;
     results.insertBefore(qBlock, results.firstChild);
 
-    // Show loading
-    const loading = document.createElement("div");
-    loading.className = "loading";
-    loading.textContent = "Converting to SQL and executing";
-    qBlock.appendChild(loading);
+    // Show loading at the LLM step
+    const llmStep = pipelineList.querySelector(".step-status");
+    llmStep.textContent = "Calling Qwen 35B...";
+    llmStep.className = "step-status running";
+
+    // Highlight the LLM step (active)
+    const steps = pipelineList.querySelectorAll(".pipeline-step");
+    steps.forEach(s => s.classList.remove("active"));
+    steps[0].classList.add("active");
 
     try {
         const resp = await fetch("/api/query", {
@@ -121,80 +128,211 @@ async function submit() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question }),
         });
-        loading.remove();
+
+        // Remove loading
+        llmStep.textContent = "Called Qwen 35B → ";
+        const loading = pipelineList.querySelector(".loading");
+        if (loading) loading.remove();
 
         if (!resp.ok) {
             const text = await resp.text();
             let errBody;
             try { errBody = JSON.parse(text); } catch { errBody = { error: text }; }
-            const errEl = document.createElement("div");
-            errEl.className = "error-msg";
-            errEl.textContent = errBody.error || `Server error ${resp.status}`;
-            qBlock.appendChild(errEl);
+            llmStep.textContent = "Called Qwen 35B → ✗ " + (errBody.error || `Server error ${resp.status}`);
+            llmStep.className = "step-status error";
+            appendError(qBlock, errBody.error || `Server error ${resp.status}`);
+            updateToggle(submitBtn, pipelineList);
             return;
         }
 
         const data = await resp.json();
 
-        if (data.error) {
-            const errEl = document.createElement("div");
-            errEl.className = "error-msg";
-            errEl.textContent = data.error;
-            qBlock.appendChild(errEl);
+        // Step 1: LLM → SQL (done)
+        const llmStatus = pipelineList.querySelector(".step-status");
+        if (data.sql) {
+            llmStatus.textContent = "Called Qwen 35B → SQL generated";
+            llmStatus.className = "step-status success";
+        } else {
+            llmStatus.textContent = "Called Qwen 35B → ✗ " + (data.error || "Unknown error");
+            llmStatus.className = "step-status error";
+            appendError(qBlock, data.error || "Unknown error");
+            updateToggle(submitBtn, pipelineList);
+            return;
+        }
 
+        // Step 2: Guardrails (validating)
+        steps[1].classList.add("active");
+        pipelineList.querySelector(".guard-status").textContent = "Guardrails → validating";
+        pipelineList.querySelector(".guard-status").className = "step-status running";
+
+        if (data.error && data.error.startsWith("Guardrail blocked")) {
+            // Guardrail blocked
+            pipelineList.querySelector(".guard-status").textContent = "Guardrails → ✗ BLOCKED";
+            pipelineList.querySelector(".guard-status").className = "step-status error";
+            appendError(qBlock, data.error);
             if (data.sql) {
-                const sqlBlock = document.createElement("div");
-                sqlBlock.className = "sql-block";
-                const label = document.createElement("div");
-                label.className = "sql-label";
-                label.textContent = "Generated SQL (blocked by guardrails):";
-                sqlBlock.appendChild(label);
-                sqlBlock.appendChild(document.createTextNode(data.sql));
+                const sqlBlock = buildSqlBlock(data.sql, "Guardrails blocked: " + data.error);
                 qBlock.appendChild(sqlBlock);
             }
-            if (data.explanation) {
-                const expEl = buildExplanationBlock(data.explanation);
-                const toggleBtn = document.createElement("button");
-                toggleBtn.className = "exp-toggle";
-                toggleBtn.textContent = "Show explanation";
-                toggleBtn.onclick = () => {
-                    expEl.classList.toggle("show");
-                    toggleBtn.classList.toggle("open");
-                    toggleBtn.textContent = expEl.classList.contains("show")
-                        ? "Hide explanation"
-                        : "Show explanation";
-                };
-                qBlock.appendChild(toggleBtn);
-                qBlock.appendChild(expEl);
-            }
-        } else {
-            const resultSection = buildResultSection(data);
-            qBlock.appendChild(resultSection);
-            // Add follow-up questions if we got results
-            if (data.sql && data.results && data.results.length > 0) {
-                const followupEl = await getFollowupQuestions(
-                    question, data.sql, data.results.length
-                );
-                if (followupEl) {
-                    qBlock.appendChild(followupEl);
-                }
-            }
+            updateToggle(submitBtn, pipelineList);
+            return;
         }
+
+        // Step 3: SQL → execute (validating)
+        pipelineList.querySelector(".guard-status").textContent = "Guardrails → passed";
+        pipelineList.querySelector(".guard-status").className = "step-status success";
+
+        // Step 4: SQLite (executing)
+        steps[2].classList.add("active");
+        pipelineList.querySelector(".exec-status").textContent = "SQLite → executing";
+        pipelineList.querySelector(".exec-status").className = "step-status running";
+
+        // Step 4: Results
+        steps[2].classList.remove("active");
+        const resultStatus = pipelineList.querySelector(".exec-status");
+
+        if (data.results && data.results.length > 0) {
+            resultStatus.textContent = `SQLite → ${data.results.length} rows`;
+            resultStatus.className = "step-status success";
+        } else if (data.sql && !data.results) {
+            resultStatus.textContent = "SQLite → no results";
+            resultStatus.className = "step-status";
+        } else {
+            resultStatus.textContent = "SQLite → ✗ error";
+            resultStatus.className = "step-status error";
+            appendError(qBlock, data.error || "Execution error");
+            updateToggle(submitBtn, pipelineList);
+            return;
+        }
+
+        // Success — build full result
+        steps[3].classList.add("active");
+        pipelineList.querySelector(".result-status").textContent = "Results rendered";
+        pipelineList.querySelector(".result-status").className = "step-status success";
+
+        const resultSection = buildResultSection(data);
+        qBlock.appendChild(resultSection);
+
     } catch (e) {
         console.error("API error:", e);
-        loading.textContent = `Connection failed: ${e.message}`;
-        loading.style.color = "#f85149";
+        const llmStatus = pipelineList.querySelector(".step-status");
+        llmStatus.textContent = "Connection failed: " + e.message;
+        llmStatus.className = "step-status error";
     } finally {
+        // Mark all completed steps
+        const allSteps = pipelineList.querySelectorAll(".pipeline-step");
+        allSteps.forEach((s, i) => {
+            const st = s.querySelector(".step-status");
+            if (i < allSteps.length - 1 && st && !st.classList.contains("error")) {
+                s.classList.remove("active");
+            }
+        });
         sendBtn.disabled = false;
         sendBtn.textContent = "Send";
         input.focus();
     }
 }
 
+function buildPipelineBlock() {
+    const block = document.createElement("div");
+    block.className = "pipeline-block";
+
+    const header = document.createElement("button");
+    header.className = "pipeline-toggle-btn";
+    header.textContent = "Show pipeline";
+
+    const list = document.createElement("ol");
+    list.className = "pipeline-stages";
+    list.innerHTML = `
+        <li class="pipeline-step">
+            <span class="step-label">1. LLM (Qwen 35B)</span>
+            <span class="step-status">Waiting...</span>
+        </li>
+        <li class="pipeline-step">
+            <span class="step-label">2. Guardrails</span>
+            <span class="guard-status step-status">Waiting...</span>
+        </li>
+        <li class="pipeline-step">
+            <span class="step-label">3. SQLite</span>
+            <span class="exec-status step-status">Waiting...</span>
+        </li>
+        <li class="pipeline-step">
+            <span class="step-label">4. Results</span>
+            <span class="result-status step-status">Waiting...</span>
+        </li>
+    `;
+
+    block.appendChild(header);
+    block.appendChild(list);
+
+    let open = false;
+    header.onclick = () => {
+        open = !open;
+        list.classList.toggle("visible", open);
+        header.textContent = open ? "Hide pipeline" : "Show pipeline";
+    };
+
+    return { el: list, toggleBtn: header, block };
+}
+
+function updateToggle(btn, list) {
+    const steps = list.querySelectorAll(".pipeline-step");
+    steps.forEach(s => s.classList.remove("active"));
+}
+
+function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = String(str);
+    return div.innerHTML;
+}
+
+function appendError(container, message) {
+    const errEl = document.createElement("div");
+    errEl.className = "error-msg";
+    errEl.textContent = message;
+    container.appendChild(errEl);
+}
+
+function buildSqlBlock(sql, label) {
+    const sqlBlock = document.createElement("div");
+    sqlBlock.className = "sql-block";
+    const labelEl = document.createElement("div");
+    labelEl.className = "sql-label";
+    labelEl.textContent = label || "Generated SQL:";
+    sqlBlock.appendChild(labelEl);
+    sqlBlock.appendChild(document.createTextNode(sql));
+    return sqlBlock;
+}
+
+function buildExplanationBlock(explanation) {
+    const el = document.createElement("div");
+    el.className = "explanation-block";
+
+    const label = document.createElement("div");
+    label.className = "explanation-label";
+    label.textContent = "How this SQL was built:";
+    el.appendChild(label);
+
+    const ul = document.createElement("ul");
+    ul.className = "explanation-list";
+
+    const steps = explanation.split(/\bStep\s+\d+:/);
+    steps.forEach((step, i) => {
+        step = step.trim();
+        if (!step) return;
+        const li = document.createElement("li");
+        li.textContent = (i > 0 ? "Step " + (i) + ": " : "") + step;
+        ul.appendChild(li);
+    });
+
+    el.appendChild(ul);
+    return el;
+}
+
 function buildResultSection(data) {
     const wrapper = document.createDocumentFragment();
 
-    // Explanation (if present) — hidden by default
+    // Explanation (if present)
     if (data.explanation) {
         const expEl = buildExplanationBlock(data.explanation);
         const toggleBtn = document.createElement("button");
@@ -213,13 +351,7 @@ function buildResultSection(data) {
 
     // SQL display
     if (data.sql) {
-        const sqlBlock = document.createElement("div");
-        sqlBlock.className = "sql-block";
-        const label = document.createElement("div");
-        label.className = "sql-label";
-        label.textContent = "Generated SQL:";
-        sqlBlock.appendChild(label);
-        sqlBlock.appendChild(document.createTextNode(data.sql));
+        const sqlBlock = buildSqlBlock(data.sql, "Generated SQL:");
         wrapper.appendChild(sqlBlock);
     }
 
@@ -260,159 +392,6 @@ function buildResultSection(data) {
     }
 
     return wrapper;
-}
-
-function buildExplanationBlock(explanation) {
-    const el = document.createElement("div");
-    el.className = "explanation-block";
-
-    const label = document.createElement("div");
-    label.className = "explanation-label";
-    label.textContent = "How this SQL was built:";
-    el.appendChild(label);
-
-    const ul = document.createElement("ul");
-    ul.className = "explanation-list";
-
-    // Split "Step 1: ... Step 2: ..." into individual bullet points
-    const steps = explanation.split(/\bStep\s+\d+:/);
-    steps.forEach((step, i) => {
-        step = step.trim();
-        if (!step) return;
-        const li = document.createElement("li");
-        // Reattach the "Step N:" prefix
-        li.textContent = (i > 0 ? "Step " + (i) + ": " : "") + step;
-        ul.appendChild(li);
-    });
-
-    el.appendChild(ul);
-    return el;
-}
-
-async function getFollowupQuestions(question, sql, rowCount) {
-    // Return null — follow-up requires another LLM call which crashes the server (too much memory for Qwen 35B).
-    // Users can ask new questions using the input box.
-    return null;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
-}
-
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = String(str);
-    return div.innerHTML;
 }
 
 function formatValue(val) {
