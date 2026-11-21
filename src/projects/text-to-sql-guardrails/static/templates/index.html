@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text-to-SQL with Guardrails — Systems in Prod</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Text-to-SQL with Guardrails</h1>
+            <p class="subtitle">Ask questions in plain English. Get SQL back with full safety controls.</p>
+        </header>
+
+        <main>
+            <div id="status-bar"></div>
+
+            <div class="panel">
+                <h3>Available tables</h3>
+                <div id="tables-list"></div>
+            </div>
+
+            <div class="input-area">
+                <input
+                    type="text"
+                    id="question-input"
+                    placeholder="Ask a question, e.g. 'Top 5 customers by spending'"
+                    autocomplete="off"
+                />
+                <button id="send-btn" onclick="submit()">Send</button>
+            </div>
+
+            <div id="sample-questions" class="panel">
+                <h3>Try these:</h3>
+                <div class="sample-list">
+                    <button onclick="trySample(this.textContent)">How many orders last month?</button>
+                    <button onclick="trySample(this.textContent)">Show revenue by region</button>
+                    <button onclick="trySample(this.textContent)">Which product has the highest stock?</button>
+                    <button onclick="trySample(this.textContent)">Top 5 customers by spending</button>
+                </div>
+            </div>
+
+            <div id="results"></div>
+        </main>
+    </div>
+
+    <script src="/static/app.js?v=6"></script>
+</body>
+</html>
