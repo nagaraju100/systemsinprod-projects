@@ -99,28 +99,25 @@ async function submit() {
     sendBtn.disabled = true;
     sendBtn.textContent = "...";
 
-    // Pipeline block — shows the 4-stage architecture
-    const pipelineBlock = buildPipelineBlock();
-    results.insertBefore(pipelineBlock, results.firstChild);
-    const pipelineList = pipelineBlock.el;
-    const submitBtn = pipelineBlock.toggleBtn;
-
-    // Add user's question to results
+    // Build pipeline block (4 stages: LLM → Guardrails → SQLite → Results)
+    const pipeline = buildPipelineBlock();
+    // Build question block
     const qBlock = document.createElement("div");
     qBlock.className = "result-block";
-    const qText = escapeHtml(question);
-    qBlock.innerHTML = `<div class="result-header"><span class="q-text">${qText}</span></div>`;
-    results.insertBefore(qBlock, results.firstChild);
+    qBlock.innerHTML = `<div class="result-header"><span class="q-text">${escapeHtml(question)}</span></div>`;
 
-    // Show loading at the LLM step
-    const llmStep = pipelineList.querySelector(".step-status");
-    llmStep.textContent = "Calling Qwen 35B...";
-    llmStep.className = "step-status running";
+    // Insert pipeline, then question block
+    results.insertBefore(pipeline.block, results.firstChild);
+    results.insertBefore(qBlock, pipeline.block.nextSibling);
 
-    // Highlight the LLM step (active)
-    const steps = pipelineList.querySelectorAll(".pipeline-step");
-    steps.forEach(s => s.classList.remove("active"));
+    const list = pipeline.list;
+    const statusEl = list.querySelectorAll(".step-status");
+    const steps = list.querySelectorAll(".pipeline-step");
+
+    // Start: LLM step active, others waiting
     steps[0].classList.add("active");
+    statusEl[0].textContent = "Calling Qwen 35B...";
+    statusEl[0].className = "step-status running";
 
     try {
         const resp = await fetch("/api/query", {
@@ -129,104 +126,78 @@ async function submit() {
             body: JSON.stringify({ question }),
         });
 
-        // Remove loading
-        llmStep.textContent = "Called Qwen 35B → ";
-        const loading = pipelineList.querySelector(".loading");
-        if (loading) loading.remove();
-
         if (!resp.ok) {
             const text = await resp.text();
             let errBody;
             try { errBody = JSON.parse(text); } catch { errBody = { error: text }; }
-            llmStep.textContent = "Called Qwen 35B → ✗ " + (errBody.error || `Server error ${resp.status}`);
-            llmStep.className = "step-status error";
+            statusEl[0].textContent = "✗ " + (errBody.error || `Server error ${resp.status}`);
+            statusEl[0].className = "step-status error";
             appendError(qBlock, errBody.error || `Server error ${resp.status}`);
-            updateToggle(submitBtn, pipelineList);
             return;
         }
 
         const data = await resp.json();
 
-        // Step 1: LLM → SQL (done)
-        const llmStatus = pipelineList.querySelector(".step-status");
+        // Step 1: LLM status
         if (data.sql) {
-            llmStatus.textContent = "Called Qwen 35B → SQL generated";
-            llmStatus.className = "step-status success";
+            statusEl[0].textContent = "SQL generated";
+            statusEl[0].className = "step-status success";
         } else {
-            llmStatus.textContent = "Called Qwen 35B → ✗ " + (data.error || "Unknown error");
-            llmStatus.className = "step-status error";
+            statusEl[0].textContent = "✗ " + (data.error || "Unknown error");
+            statusEl[0].className = "step-status error";
             appendError(qBlock, data.error || "Unknown error");
-            updateToggle(submitBtn, pipelineList);
             return;
         }
 
-        // Step 2: Guardrails (validating)
+        // Step 2: Guardrails
         steps[1].classList.add("active");
-        pipelineList.querySelector(".guard-status").textContent = "Guardrails → validating";
-        pipelineList.querySelector(".guard-status").className = "step-status running";
+        statusEl[1].textContent = "validating...";
+        statusEl[1].className = "step-status running";
 
         if (data.error && data.error.startsWith("Guardrail blocked")) {
-            // Guardrail blocked
-            pipelineList.querySelector(".guard-status").textContent = "Guardrails → ✗ BLOCKED";
-            pipelineList.querySelector(".guard-status").className = "step-status error";
+            statusEl[1].textContent = "✗ BLOCKED";
+            statusEl[1].className = "step-status error";
             appendError(qBlock, data.error);
             if (data.sql) {
-                const sqlBlock = buildSqlBlock(data.sql, "Guardrails blocked: " + data.error);
-                qBlock.appendChild(sqlBlock);
+                qBlock.appendChild(buildSqlBlock(data.sql, "Guardrails blocked: " + data.error));
             }
-            updateToggle(submitBtn, pipelineList);
             return;
         }
 
-        // Step 3: SQL → execute (validating)
-        pipelineList.querySelector(".guard-status").textContent = "Guardrails → passed";
-        pipelineList.querySelector(".guard-status").className = "step-status success";
+        statusEl[1].textContent = "passed";
+        statusEl[1].className = "step-status success";
 
-        // Step 4: SQLite (executing)
+        // Step 3: SQLite
         steps[2].classList.add("active");
-        pipelineList.querySelector(".exec-status").textContent = "SQLite → executing";
-        pipelineList.querySelector(".exec-status").className = "step-status running";
-
-        // Step 4: Results
-        steps[2].classList.remove("active");
-        const resultStatus = pipelineList.querySelector(".exec-status");
+        statusEl[2].textContent = "executing...";
+        statusEl[2].className = "step-status running";
 
         if (data.results && data.results.length > 0) {
-            resultStatus.textContent = `SQLite → ${data.results.length} rows`;
-            resultStatus.className = "step-status success";
+            statusEl[2].textContent = `${data.results.length} rows`;
+            statusEl[2].className = "step-status success";
         } else if (data.sql && !data.results) {
-            resultStatus.textContent = "SQLite → no results";
-            resultStatus.className = "step-status";
+            statusEl[2].textContent = "no results";
+            statusEl[2].className = "step-status";
         } else {
-            resultStatus.textContent = "SQLite → ✗ error";
-            resultStatus.className = "step-status error";
+            statusEl[2].textContent = "✗ error";
+            statusEl[2].className = "step-status error";
             appendError(qBlock, data.error || "Execution error");
-            updateToggle(submitBtn, pipelineList);
             return;
         }
 
-        // Success — build full result
+        // Step 4: Results
         steps[3].classList.add("active");
-        pipelineList.querySelector(".result-status").textContent = "Results rendered";
-        pipelineList.querySelector(".result-status").className = "step-status success";
+        statusEl[3].textContent = "rendered";
+        statusEl[3].className = "step-status success";
 
         const resultSection = buildResultSection(data);
         qBlock.appendChild(resultSection);
 
     } catch (e) {
         console.error("API error:", e);
-        const llmStatus = pipelineList.querySelector(".step-status");
-        llmStatus.textContent = "Connection failed: " + e.message;
-        llmStatus.className = "step-status error";
+        statusEl[0].textContent = "Connection failed: " + e.message;
+        statusEl[0].className = "step-status error";
     } finally {
-        // Mark all completed steps
-        const allSteps = pipelineList.querySelectorAll(".pipeline-step");
-        allSteps.forEach((s, i) => {
-            const st = s.querySelector(".step-status");
-            if (i < allSteps.length - 1 && st && !st.classList.contains("error")) {
-                s.classList.remove("active");
-            }
-        });
         sendBtn.disabled = false;
         sendBtn.textContent = "Send";
         input.focus();
@@ -250,15 +221,15 @@ function buildPipelineBlock() {
         </li>
         <li class="pipeline-step">
             <span class="step-label">2. Guardrails</span>
-            <span class="guard-status step-status">Waiting...</span>
+            <span class="step-status">Waiting...</span>
         </li>
         <li class="pipeline-step">
             <span class="step-label">3. SQLite</span>
-            <span class="exec-status step-status">Waiting...</span>
+            <span class="step-status">Waiting...</span>
         </li>
         <li class="pipeline-step">
             <span class="step-label">4. Results</span>
-            <span class="result-status step-status">Waiting...</span>
+            <span class="step-status">Waiting...</span>
         </li>
     `;
 
@@ -272,12 +243,7 @@ function buildPipelineBlock() {
         header.textContent = open ? "Hide pipeline" : "Show pipeline";
     };
 
-    return { el: list, toggleBtn: header, block };
-}
-
-function updateToggle(btn, list) {
-    const steps = list.querySelectorAll(".pipeline-step");
-    steps.forEach(s => s.classList.remove("active"));
+    return { block, list, header };
 }
 
 function escapeHtml(str) {
